@@ -11,7 +11,7 @@ on:
     changelog-file:
       description: Path to the changelog file
       type: string
-      required: true
+      default: 'CHANGELOG.md'
 jobs:
   release:
     runs-on: ubuntu-latest
