@@ -1,0 +1,70 @@
+name: relase
+on:
+  workflow_call:
+    ########################################
+    # Inputs
+    ########################################
+    fetch-depth:
+      description: Depth of commits to fetch on Git checkout
+      type: string
+      default: 0 # all history
+    changelog-file:
+      description: Path to the changelog file
+      type: string
+      required: true
+jobs:
+  release:
+    runs-on: something
+    steps:
+      ########################################
+      # Clone project
+      ########################################
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
+
+      ########################################
+      # Verify action from valid branch
+      ########################################
+      - name: Verify Branch
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          if [[ "$BRANCH_NAME" == "${{ github.event.repository.default_branch }}" || "$BRANCH_NAME" == maintenance/* || "$BRANCH_NAME" == release/* ]]; then
+            echo "Running job on $BRANCH_NAME"
+          else
+            echo "Error: Invalid branch ($BRANCH_NAME). Job can only run on default, maintenance, or release branches"
+            exit 1
+          fi
+
+      ########################################
+      # Extract release info from changelog
+      ########################################
+      - name: Extract Release Info
+        id: changelog
+        run: |
+          CHANGELOG_CONTENT=$(cat ${{ inputs.changelog-file }})
+          VERSION=$(echo "$CHANGELOG_CONTENT" | grep -m 1 '^## ' | sed 's/^## //')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          DESCRIPTION=$(echo "$CHANGELOG_CONTENT" | sed -n "/^## $VERSION/,/^## /p" | sed '1d;$d')
+          echo "description<<EOF" >> $GITHUB_OUTPUT
+          echo "$DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      
+      ########################################
+      # Release project
+      ########################################
+      - name: Create Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: "${{ steps.changelog.outputs.version }}",
+              name: "${{ steps.changelog.outputs.version }}",
+              body: "${{ steps.changelog.outputs.description }}",
+              target_commitish: context.sha
+            })
