@@ -5,7 +5,7 @@ on:
       fetch-depth:
         description: Depth of commits to fetch on Git checkout
         type: string
-        default: 0
+        default: 0 # all history
       changelog-file:
         description: Path to the changelog file
         type: string
@@ -19,8 +19,8 @@ on:
         type: string
         default: '0.1.0'
 permissions:
-  contents: write    
-  pull-requests: write    
+  contents: write
+  pull-requests: write
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -38,23 +38,18 @@ jobs:
       ########################################
       - name: Configure Git
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-          git remote set-url origin https://x-access-token:${{ secrets.TOKEN }}@github.com/${{ github.repository }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       ########################################
-      # Verify action from valid branch
+      # Create release branch
       ########################################
-      - name: Verify Branch
+      - name: Create Release Branch
+        id: create-branch
         run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          if [[ "$BRANCH_NAME" == "${{ github.event.repository.default_branch }}" || "$BRANCH_NAME" == maintenance/* || "$BRANCH_NAME" == release/* ]]; then
-            echo "Running job on $BRANCH_NAME"
-          else
-            echo "Error: Invalid branch ($BRANCH_NAME). Job can only run on default, maintenance, or release branches"
-            exit 1
-          fi
+          BRANCH_NAME="release/changelog-$(date +%Y%m%d-%H%M%S)"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          git checkout -b "$BRANCH_NAME"
 
       ########################################
       # Get latest version and generate new one
@@ -75,12 +70,12 @@ jobs:
               "minor")
                 NEW_VERSION="${major}.$((minor + 1)).0"
                 ;;
-              *)
+              *)  # patch by default
                 NEW_VERSION="${major}.${minor}.$((patch + 1))"
                 ;;
             esac
           else
-            CURRENT_VERSION="0.1.0"
+            CURRENT_VERSION="0.0.0"
             NEW_VERSION="${{ inputs.initial-version }}"
             echo "Creating initial release version $NEW_VERSION"
           fi
@@ -96,7 +91,7 @@ jobs:
         run: |
           RELEASE_DATE=$(date +%Y-%m-%d)
           
-          if [ "${{ steps.version.outputs.current_version }}" = "0.1.0" ]; then
+          if [ "${{ steps.version.outputs.current_version }}" = "0.0.0" ]; then
             echo "Getting all commits for initial release..."
             COMMITS=$(git log --pretty=format:"- %s")
           else
@@ -119,34 +114,59 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       ########################################
-      # Commit and push changelog
+      # Commit and push changes
       ########################################
-      - name: Commit Changelog
+      - name: Commit and Push Changes
         run: |
           git add "${{ inputs.changelog-file }}"
           git commit -m "Update changelog for version ${{ steps.version.outputs.new_version }}"
-          git push
-          
+          git push origin "${{ steps.create-branch.outputs.branch_name }}"
+
       ########################################
-      # Create tag
+      # Create Pull Request
       ########################################
-      - name: Create Tag
-        run: |
-          git tag "v${{ steps.version.outputs.new_version }}"
-          git push --tags
-      
-      ########################################
-      # Release project
-      ########################################
-      - name: Create Release
+      - name: Create Pull Request
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.repos.createRelease({
+            const { data: pr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: "v${{ steps.changelog.outputs.version }}",
-              name: "v${{ steps.changelog.outputs.version }}",
-              body: "${{ steps.changelog.outputs.description }}",
+              title: `Release version ${{ steps.version.outputs.new_version }}`,
+              body: `Changelog update for version ${{ steps.version.outputs.new_version }}
+
+              Changes included in this release:
+              ${{ steps.changelog.outputs.description }}`,
+              head: '${{ steps.create-branch.outputs.branch_name }}',
+              base: '${{ github.event.repository.default_branch }}'
+            });
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['automated-pr', 'release']
+            });
+
+      ########################################
+      # Create tag and release
+      ########################################
+      - name: Create Tag and Release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/v${{ steps.version.outputs.new_version }}`,
+              sha: context.sha
+            });
+            
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${{ steps.version.outputs.new_version }}`,
+              name: `v${{ steps.version.outputs.new_version }}`,
+              body: `${{ steps.changelog.outputs.description }}`,
               target_commitish: context.sha
-            })
+            });
