@@ -19,7 +19,8 @@ on:
         type: string
         default: '0.1.0'
 permissions:
-  contents: write        
+  contents: write    
+  pull-requests: write    
 jobs:
   release:
     runs-on: ubuntu-latest
