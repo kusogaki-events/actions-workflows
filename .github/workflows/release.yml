@@ -18,7 +18,8 @@ on:
         description: Initial version to use if no releases exist
         type: string
         default: '0.1.0'
-        
+permissions:
+  contents: write        
 jobs:
   release:
     runs-on: ubuntu-latest
