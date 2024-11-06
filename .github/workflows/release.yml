@@ -1,17 +1,24 @@
-name: relase
+name: release
 on:
   workflow_call:
-    ########################################
-    # Inputs
-    ########################################
-    fetch-depth:
-      description: Depth of commits to fetch on Git checkout
-      type: string
-      default: 0 # all history
-    changelog-file:
-      description: Path to the changelog file
-      type: string
-      default: 'CHANGELOG.md'
+    inputs:
+      fetch-depth:
+        description: Depth of commits to fetch on Git checkout
+        type: string
+        default: 0
+      changelog-file:
+        description: Path to the changelog file
+        type: string
+        default: 'CHANGELOG.md'
+      version-increment:
+        description: Version increment type (major, minor, patch)
+        type: string
+        default: 'patch'
+      initial-version:
+        description: Initial version to use if no releases exist
+        type: string
+        default: '0.1.0'
+        
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -23,6 +30,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: ${{ inputs.fetch-depth }}
+          
+      ########################################
+      # Configure Git
+      ########################################
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
 
       ########################################
       # Verify action from valid branch
@@ -38,20 +53,83 @@ jobs:
           fi
 
       ########################################
-      # Extract release info from changelog
+      # Get latest version and generate new one
       ########################################
-      - name: Extract Release Info
+      - name: Get Version Info
+        id: version
+        run: |
+          if git describe --tags --abbrev=0 2>/dev/null; then
+            CURRENT_VERSION=$(git describe --tags --abbrev=0)
+            CURRENT_VERSION=${CURRENT_VERSION#v}  # Remove 'v' prefix if present
+            
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            
+            case "${{ inputs.version-increment }}" in
+              "major")
+                NEW_VERSION="$((major + 1)).0.0"
+                ;;
+              "minor")
+                NEW_VERSION="${major}.$((minor + 1)).0"
+                ;;
+              *)
+                NEW_VERSION="${major}.${minor}.$((patch + 1))"
+                ;;
+            esac
+          else
+            CURRENT_VERSION="0.1.0"
+            NEW_VERSION="${{ inputs.initial-version }}"
+            echo "Creating initial release version $NEW_VERSION"
+          fi
+          
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      ########################################
+      # Generate changelog entries
+      ########################################
+      - name: Generate Changelog Entries
         id: changelog
         run: |
-          CHANGELOG_CONTENT=$(cat ${{ inputs.changelog-file }})
-          VERSION=$(echo "$CHANGELOG_CONTENT" | grep -m 1 '^## ' | sed 's/^## //')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          RELEASE_DATE=$(date +%Y-%m-%d)
           
-          DESCRIPTION=$(echo "$CHANGELOG_CONTENT" | sed -n "/^## $VERSION/,/^## /p" | sed '1d;$d')
+          if [ "${{ steps.version.outputs.current_version }}" = "0.1.0" ]; then
+            echo "Getting all commits for initial release..."
+            COMMITS=$(git log --pretty=format:"- %s")
+          else
+            echo "Getting commits since last tag..."
+            COMMITS=$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0)..HEAD)
+          fi
+          
+          NEW_ENTRY="## ${{ steps.version.outputs.new_version }} ($RELEASE_DATE)\n\n${COMMITS}\n\n"
+          
+          if [ -f "${{ inputs.changelog-file }}" ]; then
+            EXISTING_CONTENT=$(cat "${{ inputs.changelog-file }}")
+            echo -e "$NEW_ENTRY$EXISTING_CONTENT" > "${{ inputs.changelog-file }}"
+          else
+            echo -e "$NEW_ENTRY" > "${{ inputs.changelog-file }}"
+          fi
+          
+          echo "version=${{ steps.version.outputs.new_version }}" >> $GITHUB_OUTPUT
           echo "description<<EOF" >> $GITHUB_OUTPUT
-          echo "$DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      ########################################
+      # Commit and push changelog
+      ########################################
+      - name: Commit Changelog
+        run: |
+          git add "${{ inputs.changelog-file }}"
+          git commit -m "Update changelog for version ${{ steps.version.outputs.new_version }}"
+          git push
+          
+      ########################################
+      # Create tag
+      ########################################
+      - name: Create Tag
+        run: |
+          git tag "v${{ steps.version.outputs.new_version }}"
+          git push --tags
       
       ########################################
       # Release project
@@ -63,8 +141,8 @@ jobs:
             github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: "${{ steps.changelog.outputs.version }}",
-              name: "${{ steps.changelog.outputs.version }}",
+              tag_name: "v${{ steps.changelog.outputs.version }}",
+              name: "v${{ steps.changelog.outputs.version }}",
               body: "${{ steps.changelog.outputs.description }}",
               target_commitish: context.sha
             })
