@@ -155,6 +155,7 @@ jobs:
       ########################################
       - name: Create Tag and Release
         uses: actions/github-script@v7
+        github-token: ${{ secrets.TOKEN }}
         with:
           script: |
             await github.rest.git.createRef({
